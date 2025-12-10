@@ -1,0 +1,62 @@
+Option Explicit
+
+Private Const PATH_COLUMN As Long = 2         ' B: 現行パス
+Private Const DESCRIPTION_COLUMN As Long = 1  ' A: 内容
+
+Private Sub Worksheet_Change(ByVal Target As Range)
+    On Error GoTo ErrHandler
+
+    ' 監視対象：A列・B列、かつ3行目以降に限定
+    Dim dataCols As Range, relevant As Range
+    Set dataCols = Union(Me.Range("A" & DATA_START & ":A" & Rows.Count), _
+                     Me.Range("B" & DATA_START & ":B" & Rows.Count))
+
+    Set relevant = Intersect(Target, dataCols)
+    If relevant Is Nothing Then Exit Sub
+
+    Dim prevEvents As Boolean: prevEvents = Application.EnableEvents
+    Application.EnableEvents = False
+
+    ' 同一行多セル変更時の重複呼び出し抑止
+    Dim processedRows As Object: Set processedRows = CreateObject("Scripting.Dictionary")
+
+    Dim cell As Range
+    For Each cell In relevant.Cells
+        If Not processedRows.Exists(CStr(cell.Row)) Then
+
+            ' --- 新規登録（B列が空→非空）時のみ C/D を記録 ---
+            If cell.Column = PATH_COLUMN Or cell.Column = DESCRIPTION_COLUMN Then
+                If Trim$(CStr(Me.Cells(cell.Row, "B").Value)) <> vbNullString Then
+                    If LenB(CStr(Me.Cells(cell.Row, "C").Value)) = 0 And _
+                       LenB(CStr(Me.Cells(cell.Row, "D").Value)) = 0 Then
+                        Me.Cells(cell.Row, "C").Value = modLinkTracker.GetEditorDisplayName()
+                        Me.Cells(cell.Row, "D").Value = Now
+                    End If
+                Else
+                    ' B が空なら A のリンクを消す（明示的に無効化したケース）
+                    RemoveRowHyperlink Me, cell.Row
+                End If
+            End If
+
+            ' --- A/B が揃っていればリンク保証＆追跡 ---
+            If Trim$(CStr(Me.Cells(cell.Row, "A").Value)) <> vbNullString And _
+               Trim$(CStr(Me.Cells(cell.Row, "B").Value)) <> vbNullString Then
+                EnsureFolderLink Me, cell.Row
+            ElseIf Trim$(CStr(Me.Cells(cell.Row, "B").Value)) = vbNullString Then
+                ' Bが空 → リンクは消して終了
+                RemoveRowHyperlink Me, cell.Row
+            End If
+
+            processedRows.Add CStr(cell.Row), True
+        End If
+    Next cell
+
+CleanExit:
+    Application.EnableEvents = prevEvents
+    Exit Sub
+
+ErrHandler:
+    Resume CleanExit
+End Sub
+
+
