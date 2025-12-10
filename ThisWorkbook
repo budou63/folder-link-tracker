@@ -1,0 +1,28 @@
+Option Explicit
+
+' ▼起動時に全行確認を走らせたい場合は True
+Private Const RUN_CHECK_ON_OPEN As Boolean = False
+
+Private Sub Workbook_Open()
+    On Error Resume Next
+
+    ' --- 初期セットアップ（シート作成・見出し・整形） ---
+    Dim ws As Worksheet
+    Set ws = modLinkTracker.SetupLinkSheet()   ' ← ここはOK
+
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Worksheets(modLinkTracker.SHEET_LINKS)
+    End If
+
+    ' --- 最終更新表示 ---
+    If Not ws Is Nothing Then
+        modLinkTracker.UpdateLastUpdatedCell ws
+    End If
+
+    ' --- 起動時の全行確認（任意） ---
+    If RUN_CHECK_ON_OPEN Then
+        modLinkTracker.全行リンク再確認
+    End If
+End Sub
+
+
