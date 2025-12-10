@@ -1,0 +1,60 @@
+Option Explicit
+
+Private Sub UserForm_Initialize()
+    Dim bases As Variant
+    Dim i As Long
+    ' 既定ルートを候補として表示
+    InitDefaults
+    bases = modLinkTracker.GetActiveRoots() ' 現在有効なものを優先選択
+    Dim defaults As Variant
+    defaults = Array("\\filesv15", "\\filesv15\土木課", "\\dorosv", "D:\共有") ' ←環境に合わせ初期候補を調整
+
+    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
+    ' 初期候補を一意に
+    For i = LBound(defaults) To UBound(defaults)
+        If LenB(CStr(defaults(i))) > 0 Then dict(CStr(defaults(i))) = True
+    Next
+    ' 現アクティブも入れる
+    For i = LBound(bases) To UBound(bases)
+        If LenB(CStr(bases(i))) > 0 Then dict(CStr(bases(i))) = True
+    Next
+
+    lstRoots.Clear
+    Dim key As Variant, idx As Long
+    For Each key In dict.Keys
+        lstRoots.AddItem CStr(key)
+        ' 既に有効なものはチェック
+        For i = LBound(bases) To UBound(bases)
+            If StrComp(CStr(key), CStr(bases(i)), vbTextCompare) = 0 Then
+                lstRoots.Selected(lstRoots.ListCount - 1) = True
+                Exit For
+            End If
+        Next
+    Next
+End Sub
+
+Private Sub cmdOK_Click()
+    Dim sel() As String
+    Dim i As Long, n As Long
+    n = 0
+    For i = 0 To lstRoots.ListCount - 1
+        If lstRoots.Selected(i) Then
+            ReDim Preserve sel(0 To n)
+            sel(n) = CStr(lstRoots.List(i))
+            n = n + 1
+        End If
+    Next
+
+    If n = 0 Then
+        MsgBox "少なくとも1つは選択してください。", vbExclamation
+        Exit Sub
+    End If
+
+    modLinkTracker.SetSelectedRoots sel, chkPersist.Value
+    Me.Hide
+End Sub
+
+Private Sub cmdCancel_Click()
+    Me.Hide
+End Sub
+
