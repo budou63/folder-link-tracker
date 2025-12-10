@@ -1,0 +1,502 @@
+Option Explicit
+
+'===============================
+'  すべてのモジュールレベル定数（先頭に集約）
+'===============================
+Public Const SHEET_LINKS      As String = "リンク集"   ' リンク集シート名
+Public Const DATA_START       As Long = 3              ' リンク集のデータ開始行
+
+Private Const SHEET_FILES     As String = "ファイル追跡"
+Private Const SHEET_FILELOG   As String = "ファイル移動ログ"
+Private Const FILE_HEADER_ROW As Long = 2
+Private Const FILE_DATA_START As Long = 3
+
+'===============================
+'  リンク集まわり
+'===============================
+
+' フォルダ存在チェック
+Public Function FolderExists(ByVal folderPath As String) As Boolean
+    On Error Resume Next
+    FolderExists = ((GetAttr(folderPath) And vbDirectory) = vbDirectory)
+End Function
+
+' 探索ルート
+Public Function GetActiveRoots() As Variant
+    Dim roots(0 To 1) As String
+    roots(0) = "\\filesv15\土木課"
+    roots(1) = "\\dorosv\工事管理\共通\土木課"
+    GetActiveRoots = roots
+End Function
+
+' 編集者名
+Public Function GetEditorDisplayName() As String
+    Dim appName As String: appName = Trim$(Application.UserName)
+    If appName = "" Then
+        GetEditorDisplayName = Environ$("USERNAME")
+    Else
+        GetEditorDisplayName = appName
+    End If
+End Function
+
+' A列のハイパーリンクを削除
+Public Sub RemoveRowHyperlink(ws As Worksheet, ByVal r As Long)
+    On Error Resume Next
+    ws.Cells(r, "A").Hyperlinks.Delete
+    On Error GoTo 0
+End Sub
+
+' A列にフォルダリンクを張る
+Public Sub EnsureFolderLink(ws As Worksheet, ByVal rowIndex As Long)
+    Dim folderPath As String
+    folderPath = Trim$(CStr(ws.Cells(rowIndex, "B").Value))
+
+    If folderPath = "" Then
+        RemoveRowHyperlink ws, rowIndex
+        Exit Sub
+    End If
+
+    If Not FolderExists(folderPath) Then
+        RemoveRowHyperlink ws, rowIndex
+        Exit Sub
+    End If
+
+    On Error Resume Next
+    ws.Cells(rowIndex, "A").Hyperlinks.Delete
+    On Error GoTo 0
+
+    ws.Hyperlinks.Add _
+        Anchor:=ws.Cells(rowIndex, "A"), _
+        address:=folderPath, _
+        TextToDisplay:=CStr(ws.Cells(rowIndex, "A").Value)
+End Sub
+
+' リンク集の「最終更新」表示
+Public Sub UpdateLastUpdatedCell(ws As Worksheet)
+    If ws Is Nothing Then Exit Sub
+    ws.Cells(1, 1).Value = "最終更新: " & Format$(Now, "yyyy-mm-dd HH:nn:ss")
+End Sub
+
+' リンク集シートを返す
+Public Function SetupLinkSheet() As Worksheet
+    On Error Resume Next
+    Set SetupLinkSheet = ThisWorkbook.Worksheets(SHEET_LINKS)
+    On Error GoTo 0
+End Function
+
+' 起動時などに全行リンクを張り直す
+Public Sub 全行リンク再確認()
+    Dim ws As Worksheet
+    Dim lastRow As Long, r As Long
+
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(SHEET_LINKS)
+    On Error GoTo 0
+    If ws Is Nothing Then Exit Sub
+
+    lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).Row
+    If lastRow < DATA_START Then Exit Sub
+
+    For r = DATA_START To lastRow
+        If Trim$(CStr(ws.Cells(r, "B").Value)) <> "" Then
+            EnsureFolderLink ws, r
+        Else
+            RemoveRowHyperlink ws, r
+        End If
+    Next r
+
+    UpdateLastUpdatedCell ws
+End Sub
+
+'===============================
+'  ファイル追跡ユーティリティ
+'===============================
+
+Private Function GetOrCreateSheet(ByVal name As String) As Worksheet
+    On Error Resume Next
+    Set GetOrCreateSheet = ThisWorkbook.Worksheets(name)
+    On Error GoTo 0
+
+    If GetOrCreateSheet Is Nothing Then
+        Set GetOrCreateSheet = ThisWorkbook.Worksheets.Add( _
+            After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+        GetOrCreateSheet.name = name
+    End If
+End Function
+
+Private Function LastRowIn(ws As Worksheet, ByVal colLetter As String) As Long
+    Dim r As Long
+    r = ws.Cells(ws.Rows.Count, colLetter).End(xlUp).Row
+    If r < FILE_DATA_START Then r = FILE_DATA_START - 1
+    LastRowIn = r
+End Function
+
+Private Function FileExists(ByVal filePath As String) As Boolean
+    On Error Resume Next
+    FileExists = (Len(Dir$(filePath, vbNormal Or vbReadOnly Or vbHidden Or vbSystem)) > 0)
+End Function
+
+Private Function IsLikelyPath(ByVal s As String) As Boolean
+    Dim t As String: t = Trim$(s)
+    If t = "" Then Exit Function
+    If Left$(t, 2) = "\\" Then
+        IsLikelyPath = (InStr(3, t, "\") > 0)
+    ElseIf Len(t) >= 3 And Mid$(t, 2, 2) = ":\\" Then
+        IsLikelyPath = True
+    Else
+        IsLikelyPath = False
+    End If
+End Function
+
+Private Function NormalizeFolderPath(ByVal p As String) As String
+    Dim t As String
+    t = Trim$(p)
+    If t = "" Then Exit Function
+    Do While Right$(t, 1) = "\" Or Right$(t, 1) = "/"
+        t = Left$(t, Len(t) - 1)
+    Loop
+    NormalizeFolderPath = t
+End Function
+
+Private Function SafeFileDateTime(ByVal filePath As String) As Date
+    On Error Resume Next
+    SafeFileDateTime = 0
+    If FileExists(filePath) Then
+        SafeFileDateTime = FileDateTime(filePath)
+    End If
+End Function
+
+'===============================
+' ① フォルダ内ファイル一覧の作成
+'===============================
+Public Sub フォルダ内ファイル一覧を作成()
+    Dim wsLinks As Worksheet
+    On Error Resume Next
+    Set wsLinks = ThisWorkbook.Worksheets(SHEET_LINKS)
+    On Error GoTo 0
+    If wsLinks Is Nothing Then
+        MsgBox "リンク集シート（" & SHEET_LINKS & "）が見つかりません。", vbExclamation
+        Exit Sub
+    End If
+
+    Dim wsFiles As Worksheet
+    Set wsFiles = GetOrCreateSheet(SHEET_FILES)
+
+    wsFiles.Cells.ClearContents
+
+    With wsFiles
+        .Cells(FILE_HEADER_ROW, 1).Value = "リンク集行"
+        .Cells(FILE_HEADER_ROW, 2).Value = "内容(A列)"
+        .Cells(FILE_HEADER_ROW, 3).Value = "元フォルダ"
+        .Cells(FILE_HEADER_ROW, 4).Value = "ファイル名"
+        .Cells(FILE_HEADER_ROW, 5).Value = "拡張子"
+        .Cells(FILE_HEADER_ROW, 6).Value = "初回フルパス"
+        .Cells(FILE_HEADER_ROW, 7).Value = "現在フルパス"
+        .Cells(FILE_HEADER_ROW, 8).Value = "ステータス"
+        .Cells(FILE_HEADER_ROW, 9).Value = "最終確認日時"
+        .Cells(FILE_HEADER_ROW, 10).Value = "初回更新日時"
+        .Cells(FILE_HEADER_ROW, 11).Value = "現在更新日時"
+    End With
+
+    Dim lastRowLinks As Long
+    lastRowLinks = wsLinks.Cells(wsLinks.Rows.Count, "B").End(xlUp).Row
+    If lastRowLinks < DATA_START Then
+        MsgBox "リンク集にデータがありません。", vbInformation
+        Exit Sub
+    End If
+
+    Dim r As Long, outRow As Long
+    outRow = FILE_DATA_START - 1
+
+    Dim folderPath As String, basePath As String, f As String
+    Dim fullPath As String, ext As String
+    Dim dt As Date
+
+    For r = DATA_START To lastRowLinks
+        folderPath = CStr(wsLinks.Cells(r, "B").Value)
+        folderPath = NormalizeFolderPath(folderPath)
+
+        If folderPath <> "" And FolderExists(folderPath) Then
+            basePath = folderPath
+            If Right$(basePath, 1) <> "\" Then basePath = basePath & "\"
+
+            f = Dir$(basePath & "*", vbNormal Or vbReadOnly Or vbHidden Or vbSystem)
+            Do While f <> ""
+                If (GetAttr(basePath & f) And vbDirectory) = 0 Then
+                    fullPath = basePath & f
+                    dt = SafeFileDateTime(fullPath)
+
+                    outRow = outRow + 1
+                    With wsFiles
+                        .Cells(outRow, 1).Value = r
+                        .Cells(outRow, 2).Value = wsLinks.Cells(r, "A").Value
+                        .Cells(outRow, 3).Value = folderPath
+                        .Cells(outRow, 4).Value = f
+                        If InStrRev(f, ".") > 0 Then
+                            ext = Mid$(f, InStrRev(f, ".") + 1)
+                        Else
+                            ext = ""
+                        End If
+                        .Cells(outRow, 5).Value = ext
+                        .Cells(outRow, 6).Value = fullPath
+                        .Cells(outRow, 7).Value = fullPath
+                        .Cells(outRow, 8).Value = "OK"
+                        .Cells(outRow, 9).Value = Now
+                        .Cells(outRow, 10).Value = dt
+                        .Cells(outRow, 11).Value = dt
+                    End With
+                End If
+                f = Dir$
+            Loop
+        End If
+    Next r
+
+    MsgBox "フォルダ内ファイル一覧を作成しました。行数: " & (outRow - FILE_DATA_START + 1), vbInformation
+End Sub
+
+'===============================
+' ② ファイル移動チェック
+'===============================
+Public Sub ファイル移動チェック()
+    Dim wsFiles As Worksheet
+    On Error Resume Next
+    Set wsFiles = ThisWorkbook.Worksheets(SHEET_FILES)
+    On Error GoTo 0
+    If wsFiles Is Nothing Then
+        MsgBox "ファイル追跡シート（" & SHEET_FILES & "）がありません。" & vbCrLf & _
+               "先に「フォルダ内ファイル一覧を作成」を実行してください。", vbExclamation
+        Exit Sub
+    End If
+
+    Dim wsLog As Worksheet
+    Set wsLog = GetOrCreateSheet(SHEET_FILELOG)
+    If wsLog.Cells(FILE_HEADER_ROW, 1).Value = "" Then
+        With wsLog
+            .Cells(FILE_HEADER_ROW, 1).Value = "ファイル名"
+            .Cells(FILE_HEADER_ROW, 2).Value = "旧パス"
+            .Cells(FILE_HEADER_ROW, 3).Value = "新パス"
+            .Cells(FILE_HEADER_ROW, 4).Value = "検出日時"
+            .Cells(FILE_HEADER_ROW, 5).Value = "初回更新日時"
+            .Cells(FILE_HEADER_ROW, 6).Value = "新更新日時"
+            .Cells(FILE_HEADER_ROW, 7).Value = "メモ"
+        End With
+    End If
+
+    Dim lastRow As Long
+    lastRow = LastRowIn(wsFiles, "A")
+    If lastRow < FILE_DATA_START Then
+        MsgBox "ファイル追跡シートにデータがありません。", vbInformation
+        Exit Sub
+    End If
+
+    Dim roots As Variant
+    roots = GetActiveRoots()
+
+    Dim r As Long
+    For r = FILE_DATA_START To lastRow
+        Dim fileName As String
+        Dim origPath As String, curPath As String, checkPath As String
+        Dim status As String
+        Dim foundPaths As Collection
+        Dim origMod As Date, curMod As Date
+
+        fileName = CStr(wsFiles.Cells(r, 4).Value)
+        If fileName = "" Then GoTo ContinueRow
+
+        origPath = CStr(wsFiles.Cells(r, 6).Value)
+        curPath = CStr(wsFiles.Cells(r, 7).Value)
+        origMod = wsFiles.Cells(r, 10).Value
+        curMod = wsFiles.Cells(r, 11).Value
+
+        If curPath <> "" Then
+            checkPath = curPath
+        Else
+            checkPath = origPath
+        End If
+
+        If IsLikelyPath(checkPath) And FileExists(checkPath) Then
+            status = "OK"
+            wsFiles.Cells(r, 11).Value = SafeFileDateTime(checkPath)
+            wsFiles.Cells(r, 7).Value = checkPath
+            wsFiles.Cells(r, 8).Value = status
+            wsFiles.Cells(r, 9).Value = Now
+            GoTo ContinueRow
+        End If
+
+        Set foundPaths = FindFilesByName_Dir_AllRoots(roots, fileName, 6, 60000, 30)
+
+        If foundPaths Is Nothing Or foundPaths.Count = 0 Then
+            status = "不明"
+            wsFiles.Cells(r, 8).Value = status
+            wsFiles.Cells(r, 9).Value = Now
+            GoTo ContinueRow
+        End If
+
+        Dim matchedByTime As New Collection
+        Dim i As Long
+        Dim p As String, dt As Date
+
+        If origMod <> 0 Then
+            For i = 1 To foundPaths.Count
+                p = CStr(foundPaths(i))
+                dt = SafeFileDateTime(p)
+                If dt <> 0 Then
+                    If Abs(DateDiff("s", origMod, dt)) <= 2 Then
+                        matchedByTime.Add p
+                    End If
+                End If
+            Next i
+        End If
+
+        If origMod <> 0 And matchedByTime.Count = 1 Then
+            Dim newPath As String, newMod As Date
+            newPath = CStr(matchedByTime(1))
+            newMod = SafeFileDateTime(newPath)
+
+            status = "移動"
+
+            Dim logRow As Long
+            logRow = LastRowIn(wsLog, "A") + 1
+            wsLog.Cells(logRow, 1).Value = fileName
+            wsLog.Cells(logRow, 2).Value = checkPath
+            wsLog.Cells(logRow, 3).Value = newPath
+            wsLog.Cells(logRow, 4).Value = Now
+            wsLog.Cells(logRow, 5).Value = origMod
+            wsLog.Cells(logRow, 6).Value = newMod
+            wsLog.Cells(logRow, 7).Value = "更新日時一致で追跡"
+
+            wsFiles.Cells(r, 7).Value = newPath
+            wsFiles.Cells(r, 11).Value = newMod
+            wsFiles.Cells(r, 8).Value = status
+            wsFiles.Cells(r, 9).Value = Now
+
+        ElseIf origMod <> 0 And matchedByTime.Count > 1 Then
+            status = "候補複数"
+            wsFiles.Cells(r, 8).Value = status
+            wsFiles.Cells(r, 9).Value = Now
+
+        Else
+            If foundPaths.Count = 1 Then
+                status = IIf(origMod = 0, "候補1件(時刻不明)", "候補1件(時刻不一致)")
+
+                Dim onlyPath As String, onlyMod As Date
+                onlyPath = CStr(foundPaths(1))
+                onlyMod = SafeFileDateTime(onlyPath)
+
+                Dim logRow2 As Long
+                logRow2 = LastRowIn(wsLog, "A") + 1
+                wsLog.Cells(logRow2, 1).Value = fileName
+                wsLog.Cells(logRow2, 2).Value = checkPath
+                wsLog.Cells(logRow2, 3).Value = onlyPath
+                wsLog.Cells(logRow2, 4).Value = Now
+                wsLog.Cells(logRow2, 5).Value = origMod
+                wsLog.Cells(logRow2, 6).Value = onlyMod
+                wsLog.Cells(logRow2, 7).Value = status & " のため自動更新せず"
+
+                wsFiles.Cells(r, 8).Value = status
+                wsFiles.Cells(r, 9).Value = Now
+            Else
+                status = "候補複数"
+                wsFiles.Cells(r, 8).Value = status
+                wsFiles.Cells(r, 9).Value = Now
+            End If
+        End If
+
+ContinueRow:
+    Next r
+
+    MsgBox "ファイル移動チェックが完了しました。", vbInformation
+End Sub
+
+'===============================
+'  ルート配列の Dir 再帰検索
+'===============================
+Private Function FindFilesByName_Dir_AllRoots( _
+    ByVal roots As Variant, _
+    ByVal targetName As String, _
+    Optional ByVal maxDepth As Long = 6, _
+    Optional ByVal maxVisit As Long = 60000, _
+    Optional ByVal timeoutSec As Long = 30, _
+    Optional ByVal maxCandidates As Long = 50 _
+) As Collection
+
+    Dim root As Variant
+    Dim result As New Collection
+
+    For Each root In roots
+        CollectFilesByName_Dir CStr(root), targetName, maxDepth, maxVisit, timeoutSec, maxCandidates, result
+        If result.Count >= maxCandidates Then Exit For
+    Next root
+
+    If result.Count > 0 Then
+        Set FindFilesByName_Dir_AllRoots = result
+    End If
+End Function
+
+Private Sub CollectFilesByName_Dir( _
+    ByVal baseFolder As String, _
+    ByVal targetName As String, _
+    ByVal maxDepth As Long, _
+    ByVal maxVisit As Long, _
+    ByVal timeoutSec As Long, _
+    ByVal maxCandidates As Long, _
+    ByRef result As Collection _
+)
+    On Error GoTo CleanExit
+
+    Dim q As Object: Set q = CreateObject("System.Collections.ArrayList")
+    Dim depths As Object: Set depths = CreateObject("Scripting.Dictionary")
+
+    Dim t0 As Double: t0 = Timer
+    Dim visit As Long: visit = 0
+
+    baseFolder = NormalizeFolderPath(baseFolder)
+    If baseFolder = "" Then Exit Sub
+    If Right$(baseFolder, 1) <> "\" Then baseFolder = baseFolder & "\"
+
+    q.Add baseFolder: depths(baseFolder) = 0
+
+    Do While q.Count > 0
+        Dim cur As String: cur = CStr(q(0)): q.RemoveAt 0
+        Dim d As Long: d = CLng(depths(cur))
+
+        Dim s As String
+        s = Dir$(cur & "*", vbNormal Or vbReadOnly Or vbHidden Or vbSystem)
+        Do While s <> ""
+            If (GetAttr(cur & s) And vbDirectory) = 0 Then
+                If StrComp(s, targetName, vbTextCompare) = 0 Then
+                    result.Add cur & s
+                    If result.Count >= maxCandidates Then Exit Sub
+                End If
+            End If
+            s = Dir$
+        Loop
+
+        If d < maxDepth Then
+            s = Dir$(cur & "*", vbDirectory)
+            Do While s <> ""
+                If s <> "." And s <> ".." Then
+                    If (GetAttr(cur & s) And vbDirectory) = vbDirectory Then
+                        Dim nxt As String
+                        nxt = cur & s & "\"
+                        If Not depths.Exists(nxt) Then
+                            q.Add nxt
+                            depths(nxt) = d + 1
+                        End If
+                    End If
+                End If
+                s = Dir$
+            Loop
+        End If
+
+        visit = visit + 1
+        If visit Mod 200 = 0 Then
+            DoEvents
+            If (Timer - t0) > timeoutSec Or visit > maxVisit Then Exit Sub
+        End If
+    Loop
+
+CleanExit:
+End Sub
+
+
