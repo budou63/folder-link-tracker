@@ -12,6 +12,7 @@ Private Const FILE_HEADER_ROW As Long = 2
 Private Const FILE_DATA_START As Long = 3
 
 Private Type CellFormatState
+    CellStyle As String
     FontName As String
     FontSize As Variant
     FontBold As Variant
@@ -62,6 +63,7 @@ End Sub
 
 Private Function SaveCellFormat(ByVal targetCell As Range) As CellFormatState
     With targetCell
+        SaveCellFormat.CellStyle = CStr(.Style)
         SaveCellFormat.FontName = .Font.Name
         SaveCellFormat.FontSize = .Font.Size
         SaveCellFormat.FontBold = .Font.Bold
@@ -78,6 +80,7 @@ End Function
 
 Private Sub RestoreCellFormat(ByVal targetCell As Range, ByRef savedFormat As CellFormatState)
     With targetCell
+        .Style = savedFormat.CellStyle
         .Font.Name = savedFormat.FontName
         .Font.Size = savedFormat.FontSize
         .Font.Bold = savedFormat.FontBold
