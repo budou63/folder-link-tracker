@@ -11,6 +11,20 @@ Private Const SHEET_FILELOG   As String = "ファイル移動ログ"
 Private Const FILE_HEADER_ROW As Long = 2
 Private Const FILE_DATA_START As Long = 3
 
+Private Type CellFormatState
+    FontName As String
+    FontSize As Variant
+    FontBold As Variant
+    FontItalic As Variant
+    FontUnderline As Variant
+    FontColor As Variant
+    HorizontalAlignment As Variant
+    VerticalAlignment As Variant
+    WrapText As Variant
+    NumberFormat As String
+    IndentLevel As Variant
+End Type
+
 '===============================
 '  リンク集まわり
 '===============================
@@ -46,9 +60,45 @@ Public Sub RemoveRowHyperlink(ws As Worksheet, ByVal r As Long)
     On Error GoTo 0
 End Sub
 
+Private Function SaveCellFormat(ByVal targetCell As Range) As CellFormatState
+    With targetCell
+        SaveCellFormat.FontName = .Font.Name
+        SaveCellFormat.FontSize = .Font.Size
+        SaveCellFormat.FontBold = .Font.Bold
+        SaveCellFormat.FontItalic = .Font.Italic
+        SaveCellFormat.FontUnderline = .Font.Underline
+        SaveCellFormat.FontColor = .Font.Color
+        SaveCellFormat.HorizontalAlignment = .HorizontalAlignment
+        SaveCellFormat.VerticalAlignment = .VerticalAlignment
+        SaveCellFormat.WrapText = .WrapText
+        SaveCellFormat.NumberFormat = .NumberFormat
+        SaveCellFormat.IndentLevel = .IndentLevel
+    End With
+End Function
+
+Private Sub RestoreCellFormat(ByVal targetCell As Range, ByVal savedFormat As CellFormatState)
+    With targetCell
+        .Font.Name = savedFormat.FontName
+        .Font.Size = savedFormat.FontSize
+        .Font.Bold = savedFormat.FontBold
+        .Font.Italic = savedFormat.FontItalic
+        .Font.Underline = savedFormat.FontUnderline
+        .Font.Color = savedFormat.FontColor
+        .HorizontalAlignment = savedFormat.HorizontalAlignment
+        .VerticalAlignment = savedFormat.VerticalAlignment
+        .WrapText = savedFormat.WrapText
+        .NumberFormat = savedFormat.NumberFormat
+        .IndentLevel = savedFormat.IndentLevel
+    End With
+End Sub
+
 ' A列にフォルダリンクを張る
 Public Sub EnsureFolderLink(ws As Worksheet, ByVal rowIndex As Long)
     Dim folderPath As String
+    Dim anchorCell As Range
+    Dim savedFormat As CellFormatState
+
+    Set anchorCell = ws.Cells(rowIndex, "A")
     folderPath = Trim$(CStr(ws.Cells(rowIndex, "B").Value))
 
     If folderPath = "" Then
@@ -61,14 +111,16 @@ Public Sub EnsureFolderLink(ws As Worksheet, ByVal rowIndex As Long)
         Exit Sub
     End If
 
-    On Error Resume Next
-    ws.Cells(rowIndex, "A").Hyperlinks.Delete
-    On Error GoTo 0
+    savedFormat = SaveCellFormat(anchorCell)
+
+    RemoveRowHyperlink ws, rowIndex
 
     ws.Hyperlinks.Add _
-        Anchor:=ws.Cells(rowIndex, "A"), _
+        Anchor:=anchorCell, _
         address:=folderPath, _
-        TextToDisplay:=CStr(ws.Cells(rowIndex, "A").Value)
+        TextToDisplay:=CStr(anchorCell.Value)
+
+    RestoreCellFormat anchorCell, savedFormat
 End Sub
 
 ' リンク集の「最終更新」表示
@@ -498,5 +550,4 @@ Private Sub CollectFilesByName_Dir( _
 
 CleanExit:
 End Sub
-
 
