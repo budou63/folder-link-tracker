@@ -76,7 +76,7 @@ Private Function SaveCellFormat(ByVal targetCell As Range) As CellFormatState
     End With
 End Function
 
-Private Sub RestoreCellFormat(ByVal targetCell As Range, ByVal savedFormat As CellFormatState)
+Private Sub RestoreCellFormat(ByVal targetCell As Range, ByRef savedFormat As CellFormatState)
     With targetCell
         .Font.Name = savedFormat.FontName
         .Font.Size = savedFormat.FontSize
